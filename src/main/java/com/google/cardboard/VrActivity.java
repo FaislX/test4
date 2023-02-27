@@ -1,458 +1,353 @@
-/*
- * Copyright 2019 Google LLC
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package com.google.cardboard;
 
 import android.Manifest;
-import android.annotation.SuppressLint;
-import android.app.Activity;
 import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.content.res.AssetManager;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
-import android.net.Uri;
-import android.opengl.GLSurfaceView;
-import android.os.Build.VERSION;
-import android.os.Build.VERSION_CODES;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
-import android.os.Looper;
 import android.os.Message;
-import android.provider.Settings;
-
-import androidx.activity.result.ActivityResult;
-import androidx.activity.result.ActivityResultCallback;
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
-import androidx.appcompat.app.AppCompatActivity;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.util.Log;
-import android.view.MenuInflater;
-import android.view.MenuItem;
-import android.view.MotionEvent;
 import android.view.View;
-import android.view.WindowManager;
-import android.widget.PopupMenu;
+import android.widget.Button;
+import android.widget.CompoundButton;
+import android.widget.EditText;
+import android.widget.SeekBar;
+import android.widget.TextView;
 import android.widget.Toast;
-
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.UUID;
-import java.util.stream.Collectors;
+import android.widget.ToggleButton;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
-import javax.microedition.khronos.egl.EGLConfig;
-import javax.microedition.khronos.opengles.GL10;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
- * A Google Cardboard VR NDK sample application.
- *
- * <p>This is the main Activity for the sample application. It initializes a GLSurfaceView to allow
- * rendering.
+ * Activité principale, permet :
+ *  - le choix du nom du patient
+ *  - le choix du nombre de mesures
+ *  - le choix du type de mesure (simple/dynamique)
+ *  - le choix du rôle du téléphone (manette/VR)
+ *  - l'accès à la dernière mesure
  */
-// TODO(b/184737638): Remove decorator once the AndroidX migration is completed.
-@SuppressWarnings("deprecation")
-public class VrActivity extends AppCompatActivity implements PopupMenu.OnMenuItemClickListener {
-  static {
-    System.loadLibrary("cardboard_jni");
-  }
+public class HomeActivity extends AppCompatActivity implements ActivityCompat.OnRequestPermissionsResultCallback {
+    static final String MESSAGE_B_RECEIVED = "RECEIVED";
 
-  private static final String TAG = VrActivity.class.getSimpleName();
+    public static final String TAG = "HomeActivity";
 
-  // Permission request codes
-  private static final int PERMISSIONS_REQUEST_CODE = 2;
+    private static final int REQUEST_ENABLE_BT = 1;
+    private static final int REQUEST_BT_PERMISSIONS = 2;
+    private static final int REQUEST_CODE_ECRAN_ACTIVITY = 4;
+    private static final int REQUEST_CODE_PROTOCOLE = 17;
 
-  // Opaque native pointer to the native CardboardApp instance.
-  // This object is owned by the VrActivity instance and passed to the native methods.
-  // Donc permet la communication entre cette activité java et le code C++
-  private long nativeApp;
-  //Angle de la barre verticale, communiqué par la code c++ via la méthode getAngle().
-  private float mAngle;
-  //Gestion de l'espace 3D OPENGl
-  private GLSurfaceView glView;
+    // Nom du fichier et des éléments permettant de stocker la dernière mesure (fiche patient)
+    private static final String SHARED_PREF_USER_INFO = "SHARED_PREF_USER_INFO";
+    private static final String SHARED_PREF_USER_INFO_NAME = "SHARED_PREF_USER_INFO_NAME";
+    private static final String SHARED_PREF_USER_INFO_SCORE = "SHARED_PREF_USER_INFO_SCORE";
 
-  private final UUID MY_UUID = UUID.fromString("a0113482-fe2f-4ee4-bbbd-7f4346868e9b");
+    // Octets envoyés par la manette pour la rotation gauche/droite et la fin de la mesure
+    public static final byte[] byte_d = "d".getBytes();
+    public static final byte[] byte_dl = "dl".getBytes();
+    public static final byte[] byte_g = "g".getBytes();
+    public static final byte[] byte_gl = "gl".getBytes();
+    public static final byte[] byte_t = "t".getBytes();
+    public static final byte[] byte_s = "s".getBytes();
 
-  //Communication du score à l'activité HomeActivity
-  public static final String RESULT_SCORE = "RESULT_SCORE";
+    BluetoothAdapter bluetoothAdapter;
 
-  private final String NAME = "Vertical_Subjective_Connection";
+    Button mbuttonManette;
+    Button mbuttonEcran;
+    Button mbuttonOuvrir;
+    Button mbuttonProtocole;
+    SeekBar mseekMesures;
+    ToggleButton mtoggleSimple;
+    ToggleButton mtoggleDynamique;
+    EditText mEditTextNom;
+    TextView mtextMesures;
+    //Button mbuttonTutoriel;
 
-  private ArrayList<Float> mScore = new ArrayList<Float>();
+    int modeMesure;
+    //la liste des paramètres des conditions des séries de mesures
+    ArrayList<ParameterSeries> listeParametres = new ArrayList<ParameterSeries>();
 
-  private List<String> mControlsArrayAdapter;
+    protected void onCreate(Bundle paramBundle) {
+        super.onCreate(paramBundle);
+        setContentView(R.layout.activity_home);
 
+        // Initialisation des éléments graphiques
+        mbuttonManette = findViewById(R.id.manette);
+        //mbuttonTutoriel = findViewById(R.id.tutoriel);
+        mbuttonEcran = findViewById(R.id.ecran);
+        mbuttonOuvrir = findViewById(R.id.openusrdata);
+        mbuttonProtocole = findViewById(R.id.protocole);
+        mEditTextNom = findViewById(R.id.editT_nomPatient);
+        mseekMesures = findViewById(R.id.sbNbMesures);
+        mtextMesures = findViewById(R.id.tvNbMesures);
+        mtoggleSimple = findViewById(R.id.tbSimple);
+        mtoggleDynamique = findViewById(R.id.tbDynamique);
 
+        mtextMesures.setText(String.valueOf(mseekMesures.getProgress()));
+        mbuttonEcran.setEnabled(false);
+        mbuttonOuvrir.setEnabled(false);
 
-  private BroadcastReceiver Receiver = new BroadcastReceiver() {
-    public void onReceive(Context param1Context, Intent param1Intent) {
-      // ok
-    }
-  };
+        bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+        listeParametres.add(new ParameterSeries(3,1,1,1));
 
-  Float[] alpha = new Float[1];
+        mbuttonEcran.setOnClickListener(enablebtListener);
+        mbuttonManette.setOnClickListener(enablebtListener);
+        //mbuttonTutoriel.setOnClickListener(enablebtListener);
+        getRequiredPermissions();
 
-  BluetoothAdapter bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-
-  HomeActivity.mHandler handler = new HomeActivity.mHandler();
-
-  private int mode_mesure;
-  private int mesure_restantes;
-
-  MyBluetoothService service;
-  int tourne;
-  ActivityResultLauncher<Intent> mActivityResultLauncher = registerForActivityResult(
-          new ActivityResultContracts.StartActivityForResult(),
-          new ActivityResultCallback<ActivityResult>() {
+        // Affiche la dernière mesure si le nom renseigné correspond à celui de la dernière mesure réalisée
+        mbuttonOuvrir.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onActivityResult(ActivityResult result) {
-              if (result.getResultCode() == Activity.RESULT_OK) {
-                // ok
-              }
+            public void onClick(View view) {
+                String alertMessage;
+                String currentScore = getSharedPreferences(SHARED_PREF_USER_INFO, MODE_PRIVATE).getString(SHARED_PREF_USER_INFO_SCORE, "Réaliser une mesure pour afficher le résultat");
+                String currentName = getSharedPreferences(SHARED_PREF_USER_INFO, MODE_PRIVATE).getString(SHARED_PREF_USER_INFO_NAME, "Test");
+                if (!currentName.equals(mEditTextNom.getText().toString())) {
+                    alertMessage = "Réaliser une mesure pour afficher le résultat";
+                } else {
+                    alertMessage = currentScore;
+                }
+                new AlertDialog.Builder(HomeActivity.this)
+                                .setTitle(mEditTextNom.getText().toString())
+                                .setMessage(alertMessage)
+                                .setCancelable(true).create().show();
             }
-          });
-
-
-  @SuppressLint("ClickableViewAccessibility")
-  @Override
-  public void onCreate(Bundle savedInstance) {
-    super.onCreate(savedInstance);
-    Log.i("InputStream","ENtrée dans VrActivity");
-
-    nativeApp = nativeOnCreate(getAssets());
-
-    setContentView(R.layout.activity_vr);
-    glView = findViewById(R.id.surface_view);
-    glView.setEGLContextClientVersion(2);
-    Renderer renderer = new Renderer();
-    glView.setRenderer(renderer);
-    glView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
-    glView.setOnTouchListener(
-        (v, event) -> {
-          if (event.getAction() == MotionEvent.ACTION_DOWN) {
-            // Signal a trigger event.
-            glView.queueEvent(
-                () -> {
-
-                });
-            return true;
-          }
-          return false;
         });
 
-    Intent discoverableIntent =
-            new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
-    discoverableIntent.putExtra(BluetoothAdapter.EXTRA_SCAN_MODE,BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE);
-    discoverableIntent.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300);
-    mActivityResultLauncher.launch(discoverableIntent);
-    //Gestion du nombre de mesures à faire. En cas de non reception de la variable, 3 mesures.
-    if (new Integer(getIntent().getExtras().getInt("nbMesures")) != null){
-      mesure_restantes = getIntent().getExtras().getInt("nbMesures") - 1;
-    } else {
-      mesure_restantes = 2;
-    }
-    //Gestion du type de mesure (Dynamique ou Statique). En cas de non reception, VVS Statique.
-    if (new Integer(getIntent().getExtras().getInt("modeMesure")) != null){
-      mode_mesure = getIntent().getExtras().getInt("modeMesure");
-    } else {
-      mode_mesure = 0;
-    }
-    Log.i("VRACTIVITY", String.valueOf(mode_mesure));
+        // ouvre l'activité pour choisir le protocole
+        mbuttonProtocole.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                Intent intent = new Intent(HomeActivity.this, ProtocoleActivity.class);
+                startActivityForResult(intent,REQUEST_CODE_PROTOCOLE);
+            }
+        });
 
-    //Gestion de la VR
-    SensorManager sensorManager = (SensorManager)getSystemService(SENSOR_SERVICE);
-    Sensor sensor = sensorManager.getDefaultSensor(9);
-    SensorEventListener sensorEventListener = new SensorEventListener() {
-      public void onAccuracyChanged(Sensor param1Sensor, int param1Int) {}
+        // Nom du patient, nécessaire pour activer les boutons Ecran et Ouvrir
+        mEditTextNom.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence charSequence, int i, int i1, int i2) {
 
-      public void onSensorChanged(SensorEvent param1SensorEvent) {
-        float f1 = param1SensorEvent.values[0];
-        float f2 = param1SensorEvent.values[1];
-        float f3 = param1SensorEvent.values[2];
-        Float[] arrayOfFloat = VrActivity.this.alpha;
-        double d = ((float)Math.atan2(-f2, f1) * 180.0F);
-        Double.isNaN(d);
-        arrayOfFloat[0] = (float) (d / Math.PI);
-      }
+            }
+
+            @Override
+            public void onTextChanged(CharSequence charSequence, int i, int i1, int i2) {
+
+            }
+
+            @Override
+            public void afterTextChanged(Editable editable) {
+                mbuttonEcran.setEnabled(!editable.toString().isEmpty());
+                mbuttonOuvrir.setEnabled(!editable.toString().isEmpty());
+            }
+        });
+
+        // Nombre de mesures, déterminé par le slider
+        mseekMesures.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                mtextMesures.setText(String.valueOf(progress));
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+
+            }
+        });
+
+        // VVS simple
+        mtoggleSimple.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton compoundButton, boolean b) {
+                if (b) {
+                    modeMesure = 0;
+                    mtoggleDynamique.setChecked(false);
+                }
+            }
+        });
+
+        // VVS dynamique
+        mtoggleDynamique.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton compoundButton, boolean b) {
+                if (b) {
+                    modeMesure = 1;
+                    mtoggleSimple.setChecked(false);
+                    Log.i("ModeDynamique", "ENTREE DANS UNE MESURE DYNAMIQUE");
+                }
+            }
+        });
+    }
+
+    // Listener affecté aux boutons Manette et Ecran tant que le bletooth n'est pas activé demandant de l'activer
+    private View.OnClickListener enablebtListener = new View.OnClickListener() {
+        @Override
+        public void onClick(View view) {
+            Toast.makeText(HomeActivity.this, "Les autorisations bluetooth sont nécessaires au fonctionnement de l'application", Toast.LENGTH_LONG);
+            getRequiredPermissions();
+        }
     };
 
-    // Gestion de la connection Bluetooth avec la manette
-    this.service = new MyBluetoothService((Context)this, mHandler);
-    IntentFilter intentFilter = new IntentFilter("RECEIVED");
-    registerReceiver(this.Receiver, intentFilter);
-    this.service.startServer(this.MY_UUID);
-    sensorManager.registerListener(sensorEventListener, sensor, 3);
+    // Listener pour le bouton Manette, stock le nom du patient et démarre l'activité ConnecteEcran
+    private View.OnClickListener manetteListener = new View.OnClickListener() {
+        @Override
+        public void onClick(View view) {
+            getSharedPreferences(SHARED_PREF_USER_INFO, MODE_PRIVATE)
+                    .edit()
+                    .putString(SHARED_PREF_USER_INFO_NAME, mEditTextNom.getText().toString())
+                    .apply();
+            startActivity(new Intent(HomeActivity.this, ConnecteEcran.class));
+        }
+    };
+    /** @TODO FAIRE UNE activité tutoriel qui fonctionne
+    /* Listener pour le bouton tutoriel
+    private View.OnClickListener tutorielListener = new View.OnClickListener() {
+        @Override
+        public void onClick(View view) {
+            getSharedPreferences(SHARED_PREF_USER_INFO, MODE_PRIVATE)
+                    .edit()
+                    .putString(SHARED_PREF_USER_INFO_NAME, mEditTextNom.getText().toString())
+                    .apply();
+            startActivity(new Intent(HomeActivity.this, TutorialActivity.class));
+        }
+    };*/
 
+    // Listener pour le bouton Ecran, stock le nom du patient et démarre l'activit" VrActivity en renseignant le nombre de mesures et le mode de mesure
+    private View.OnClickListener ecranListener = new View.OnClickListener() {
+        @Override
+        public void onClick(View view) {
+            getSharedPreferences(SHARED_PREF_USER_INFO, MODE_PRIVATE)
+                    .edit()
+                    .putString(SHARED_PREF_USER_INFO_NAME, mEditTextNom.getText().toString())
+                    .apply();
+            Intent intentEcran = new Intent((Context) getBaseContext(), VrActivity.class);
+            intentEcran.putExtra("nbMesures", Integer.parseInt(mtextMesures.getText().toString()));
+            intentEcran.putExtra("modeMesure", modeMesure);
+            intentEcran.putExtra("parametres", listeParametres);
+            startActivityForResult(intentEcran, REQUEST_CODE_ECRAN_ACTIVITY);
+        }
+    };
 
-    // TODO(b/139010241): Avoid that action and status bar are displayed when pressing settings
-    // button.
-    setImmersiveSticky();
-    View decorView = getWindow().getDecorView();
-    decorView.setOnSystemUiVisibilityChangeListener(
-        (visibility) -> {
-          if ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
-            setImmersiveSticky();
-          }
-        });
-
-    // Forces screen to max brightness.
-    WindowManager.LayoutParams layout = getWindow().getAttributes();
-    layout.screenBrightness = 1.f;
-    getWindow().setAttributes(layout);
-
-    // Prevents screen from dimming/locking.
-    getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-  }
-  /*
-  Gestion de la fin de la mesure, communication du score à HomeActivity
-   */
-  private void endMesure() {
-    AlertDialog.Builder builder = new AlertDialog.Builder(this);
-    builder.setTitle("Mesure Terminée")
-            .setMessage("Votre score est de :" + mScore)
-            .setCancelable(false)
-            .setPositiveButton("OK", new DialogInterface.OnClickListener() {
-              @Override
-              public void onClick(DialogInterface dialogInterface, int i) {
-                Intent intent = new Intent();
-                intent.putExtra(RESULT_SCORE, mScore);
-                setResult(Activity.RESULT_OK, intent);
-                finish();
-              }
-            })
-            .create()
-            .show();
-  }
-
-  /*
-  Gestion de la communication avec la manette
-  Byte_d = tourner à droite
-  Byte_g = tourner à gauche
-  Byte_t = resultat d'une mesure, si il n'y a plus de mesure restantes, affichage des résultats
-   */
-  private final Handler mHandler = new Handler(Looper.getMainLooper()) {
+    /**
+     * Gestion des résultats des activités VrActivity et l'activation du buetooth
+     * @param requestCode
+     * @param resultCode
+     * @param data
+     */
     @Override
-    public void handleMessage(Message param1Message) {
-      super.handleMessage(param1Message);
-      if (param1Message.what == 0) {
-        String command = new String((byte[]) param1Message.obj, 0, param1Message.arg1);
-        //La
-        if (command.equals(new String(HomeActivity.byte_d))) {
-          Log.i("InputStream","Received byte" + command);
-          tourne = 1;
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        // L'activité VrActivity s'est terminée et renvoie les résultats de la mesure
+        if (REQUEST_CODE_ECRAN_ACTIVITY == requestCode && RESULT_OK == resultCode && data != null) {
+            Log.i(TAG, "Recieved result from Ecran");
+            // Ajout des scores au fichier de préférences
+            ArrayList<Float> arrayScore =(ArrayList<Float>)  data.getSerializableExtra(VrActivity.RESULT_SCORE);
+            String score = arrayScore.stream().map(Object::toString).collect(Collectors.joining(", "));
+            getSharedPreferences(SHARED_PREF_USER_INFO, MODE_PRIVATE)
+                    .edit()
+                    .putString(SHARED_PREF_USER_INFO_SCORE, score)
+                    .apply();
         }
-        else if (command.equals(new String(HomeActivity.byte_g))) {
-          Log.i("InputStream","Received byte" + command);
-          tourne = -1;
-        }
-
-        else if (command.equals(new String(HomeActivity.byte_s))) {
-          tourne = 0;
-        }
-        else if (command.equals(new String(HomeActivity.byte_t))) {
-          mScore.add(mAngle);
-          if (mesure_restantes > 0) {
-            mesure_restantes --;
-            tourne =  10;
-          } else {
-            String strScore = mScore.stream().map(Object::toString).collect(Collectors.joining(", "));
-            VrActivity.this.service.write(strScore.getBytes(StandardCharsets.UTF_8));
-            endMesure();
-          }
+        // Le bluetooth a été activé
+        else if (REQUEST_ENABLE_BT == requestCode && RESULT_OK == resultCode) {
+            Log.d(TAG, "Bluetooth enabled");
+            // Attribution des Listener aux boutons Manette et Ecran
+            mbuttonManette.setOnClickListener(manetteListener);
+            mbuttonEcran.setOnClickListener(ecranListener);
+            //mbuttonTutoriel.setOnClickListener(tutorielListener);
+        } else if ((requestCode == REQUEST_CODE_PROTOCOLE) && (RESULT_OK== resultCode) && (data != null)) {
+            Log.i(TAG, "Received Result from Protocole");
+            listeParametres = data.getParcelableArrayListExtra("data");
+            Log.i(TAG, String.valueOf(listeParametres.size()));
         } else {
-          Log.i("Ecran: HandleMessage", "unknown byte" + command + ", " + new String(HomeActivity.byte_g));
+            Log.i(TAG, "Unknown ActivityResult received");
         }
-      }
-    }
-  };
-
-  @Override
-  protected void onPause() {
-    super.onPause();
-    nativeOnPause(nativeApp);
-    glView.onPause();
-  }
-
-  @Override
-  protected void onResume() {
-    super.onResume();
-
-    // On Android P and below, checks for activity to READ_EXTERNAL_STORAGE. When it is not granted,
-    // the application will request them. For Android Q and above, READ_EXTERNAL_STORAGE is optional
-    // and scoped storage will be used instead. If it is provided (but not checked) and there are
-    // device parameters saved in external storage those will be migrated to scoped storage.
-    if (VERSION.SDK_INT < VERSION_CODES.Q && !isReadExternalStorageEnabled()) {
-      requestPermissions();
-      return;
     }
 
-    glView.onResume();
-    nativeOnResume(nativeApp);
-  }
-
-  @Override
-  protected void onDestroy() {
-    super.onDestroy();
-    nativeOnDestroy(nativeApp);
-    nativeApp = 0;
-  }
-
-  @Override
-  public void onWindowFocusChanged(boolean hasFocus) {
-    super.onWindowFocusChanged(hasFocus);
-    if (hasFocus) {
-      setImmersiveSticky();
+    /**
+     * Runtime permissions en fonction de l'API du téléphone et activation du bluetooth
+     */
+    private void getRequiredPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Log.i(TAG, "Requesting 11+ API bluetooth Permissions");
+            String[] requiredPermissions = new String[]{ Manifest.permission.BLUETOOTH_SCAN,
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                    Manifest.permission.BLUETOOTH_ADVERTISE};
+            ActivityCompat.requestPermissions(this, requiredPermissions, REQUEST_BT_PERMISSIONS);
+        } else {
+            if (bluetoothAdapter != null && !bluetoothAdapter.isEnabled()) {
+                Log.i(TAG, "Requesting enable bluetooth");
+                startActivityForResult(new Intent("android.bluetooth.adapter.action.REQUEST_ENABLE"), REQUEST_ENABLE_BT);
+            } else {
+                Log.i(TAG, "bluetooth already enabled");
+                mbuttonManette.setOnClickListener(manetteListener);
+                mbuttonEcran.setOnClickListener(ecranListener);
+                //mbuttonTutoriel.setOnClickListener(tutorielListener);
+            }
+        }
     }
-  }
 
-  private class Renderer implements GLSurfaceView.Renderer {
+    /**
+     * Vérifie que les permissions ont été accordées, si non, redemande
+     * @param requestCode
+     * @param permissions
+     * @param grantResults
+     */
     @Override
-    public void onSurfaceCreated(GL10 gl10, EGLConfig eglConfig) {
-      nativeOnSurfaceCreated(nativeApp, mode_mesure);
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_BT_PERMISSIONS) {
+            Log.i(TAG, "Received response for Bluetooth permissions request.");
+            if (grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Log.i(TAG, "Bluetooth permissions granted.");
+                mbuttonManette.setOnClickListener(manetteListener);
+                mbuttonEcran.setOnClickListener(ecranListener);
+                //mbuttonTutoriel.setOnClickListener(tutorielListener);
+            } else {
+                Log.i(TAG, "Bluetooth permissions denied.");
+                Toast.makeText(this, "Les autorisations bluetooth sont nécessaires au fonctionnement de l'application", Toast.LENGTH_LONG);
+                getRequiredPermissions();
+            }
+        }
     }
 
-    @Override
-    public void onSurfaceChanged(GL10 gl10, int width, int height) {
-      nativeSetScreenParams(nativeApp, width, height);
+
+    private static interface MessageConstants {
+        public static final int MESSAGE_READ = 0;
+
+        public static final int MESSAGE_TOAST = 2;
+
+        public static final int MESSAGE_WRITE = 1;
     }
 
-    @Override
-    public void onDrawFrame(GL10 gl10) {
-      nativeOnDrawFrame(nativeApp, tourne);
-      //Log.i("InputStream","NATIVE DRAW ON FRAME OK");
-      // Conversion de l'angle qui est en radians en degres
-      mAngle = getAngle(nativeApp);
-      mAngle = (float) (mAngle % Math.PI);
-      mAngle = (float) ((mAngle*180.0)/Math.PI);
-      if (mAngle > 90.0f){
-        mAngle = mAngle - 180.0f;
-      }
-    mAngle = Math.round(mAngle * 100f) / 100f;
-
-     }
-  }
-
-  /** Callback for when close button is pressed. */
-  public void closeSample(View view) {
-    Log.d(TAG, "Leaving VR sample");
-    finish();
-  }
-
-  /** Callback for when settings_menu button is pressed. */
-  public void showSettings(View view) {
-    PopupMenu popup = new PopupMenu(this, view);
-    MenuInflater inflater = popup.getMenuInflater();
-    inflater.inflate(R.menu.settings_menu, popup.getMenu());
-    popup.setOnMenuItemClickListener(this);
-    popup.show();
-
-  }
-
-  @Override
-  public boolean onMenuItemClick(MenuItem item) {
-    if (item.getItemId() == R.id.switch_viewer) {
-      nativeSwitchViewer(nativeApp);
-      return true;
+    static class mHandler extends Handler {
+        String command;
+        @Override
+        public void handleMessage(Message param1Message) {
+            super.handleMessage(param1Message);
+            if (param1Message.what == 0) {
+                this.command = new String((byte[]) param1Message.obj);
+            }
+        }
     }
-    return false;
-  }
-
-  /**
-   * Checks for READ_EXTERNAL_STORAGE permission.
-   *
-   * @return whether the READ_EXTERNAL_STORAGE is already granted.
-   */
-  private boolean isReadExternalStorageEnabled() {
-    return ActivityCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
-        == PackageManager.PERMISSION_GRANTED;
-  }
-
-  /** Handles the requests for activity permission to READ_EXTERNAL_STORAGE. */
-  private void requestPermissions() {
-    final String[] permissions = new String[] {Manifest.permission.READ_EXTERNAL_STORAGE};
-    ActivityCompat.requestPermissions(this, permissions, PERMISSIONS_REQUEST_CODE);
-  }
-
-  /**
-   * Callback for the result from requesting permissions.
-   *
-   * <p>When READ_EXTERNAL_STORAGE permission is not granted, the settings view will be launched
-   * with a toast explaining why it is required.
-   */
-  @Override
-  public void onRequestPermissionsResult(
-      int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-    super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-    if (!isReadExternalStorageEnabled()) {
-      Toast.makeText(this, R.string.read_storage_permission, Toast.LENGTH_LONG).show();
-      if (!ActivityCompat.shouldShowRequestPermissionRationale(
-          this, Manifest.permission.READ_EXTERNAL_STORAGE)) {
-        // Permission denied with checking "Do not ask again". Note that in Android R "Do not ask
-        // again" is not available anymore.
-        launchPermissionsSettings();
-      }
-      finish();
-    }
-  }
-
-  private void launchPermissionsSettings() {
-    Intent intent = new Intent();
-    intent.setAction(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-    intent.setData(Uri.fromParts("package", getPackageName(), null));
-    startActivity(intent);
-  }
-
-  private void setImmersiveSticky() {
-    getWindow()
-        .getDecorView()
-        .setSystemUiVisibility(
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_FULLSCREEN
-                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-  }
-
-  //Méthodes qui communiquent avec le code C++
-
-  private native long nativeOnCreate(AssetManager assetManager);
-
-  private native void nativeOnDestroy(long nativeApp);
-
-  private native void nativeOnSurfaceCreated(long nativeApp, int ModeMesure);
-
-  private native void nativeOnDrawFrame(long nativeApp, int tourne);
-
-  private native void nativeOnPause(long nativeApp);
-
-  private native void nativeOnResume(long nativeApp);
-
-  private native void nativeSetScreenParams(long nativeApp, int width, int height);
-
-  private native void nativeSwitchViewer(long nativeApp);
-
-  private native float getAngle(long nativeApp);
 }
